@@ -2,6 +2,13 @@
 name = "embedb"
 version = "0.1.0"
 edition = "2024"
+rust-version = "1.85"
+description = "An embedded, persistent vector store — no server, no config, no credentials"
+license = "MIT"
+repository = "https://github.com/Hacker-007/embedb"
+readme = "README.md"
+keywords = ["vector", "embeddings", "vector-search", "ann", "database"]
+categories = ["database", "data-structures"]
 
 [dependencies]
 libc = "0.2"
