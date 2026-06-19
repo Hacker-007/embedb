@@ -1,7 +1,9 @@
 use std::{
     fs::{File, OpenOptions},
     io::{Read, Write},
+    ops::Index,
     path::Path,
+    slice::SliceIndex,
 };
 
 use memmap2::MmapMut;
@@ -88,6 +90,16 @@ impl GrowableMmap {
         Ok(n)
     }
 
+    /// Reads bytes from the given range into `buffer`.
+    pub fn read_range<R>(&self, range: R, buffer: &mut [u8]) -> EmbedBResult<usize>
+    where
+        R: SliceIndex<[u8], Output = [u8]>,
+    {
+        let mut slice = self.mmap.index(range);
+        let n = slice.read(buffer).expect("read is infallible");
+        Ok(n)
+    }
+
     /// Writes `bytes` at the current cursor position, growing the
     /// backing file if necessary, then advances the cursor.
     pub fn write(&mut self, bytes: &[u8]) -> EmbedBResult<usize> {
@@ -106,17 +118,11 @@ impl GrowableMmap {
         Ok(n)
     }
 
-    /// Returns the total allocated capacity of the mapped region in bytes.
-    /// This is the size of the backing file, not the number of bytes written.
-    pub fn len(&self) -> usize {
-        self.mmap.len()
-    }
-
     /// Grows the backing file according to the allocation strategy: doubles
     /// the current size until [`SOFT_THRESHOLD`] is reached, then grows in
     /// fixed [`CHUNK_SIZE`] increments. Remaps after resizing.
     fn resize(&mut self) -> EmbedBResult<()> {
-        let current_size = self.len() as u64;
+        let current_size = self.mmap.len() as u64;
         let updated_size = if current_size >= SOFT_THRESHOLD {
             current_size + CHUNK_SIZE
         } else {
