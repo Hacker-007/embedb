@@ -14,24 +14,33 @@ pub(crate) const INITIAL_SIZE: u64 = 1_024;
 pub(crate) const SOFT_THRESHOLD: u64 = 1_073_741_824;
 pub(crate) const CHUNK_SIZE: u64 = 1_048_576;
 
-/// A mmap'ed file that automatically grows the
-/// length of backing file.
+/// A mmap'ed file that automatically grows the length of
+/// its backing file.
 ///
-/// Upon initialization, the file is allocated to 1 KB
-/// which doubles until a soft threshold of 1 GB is reached.
-/// Afterwards, all future allocations occur in chunks of
-/// 32 MB.
+/// Upon initialization, the file is allocated to 1 KB, which
+/// doubles until a soft threshold of 1 GB is reached. Afterwards,
+/// all future allocations occur in fixed chunks of 1 MB.
 ///
-/// NOTE:
-/// This implementation does not currently provide support
-/// for automatic trunction.
+/// This implementation does not currently support automatic
+/// truncation.
+///
+/// # Safety
+///
+/// Modifying the backing file of an active mmap outside of this
+/// type is undefined behavior. Callers must ensure no external
+/// process writes to the file while a [`GrowableMmap`] is live.
+/// Within the EmbedB client, all accesses are coordinated through
+/// `fcntl` (Unix) or `LockFileEx` (Windows) advisory locks.
 #[derive(Debug)]
 pub struct GrowableMmap {
     /// The backing file of the mmap'ed region.
     file: File,
     /// A mutable mmap'ed view of the file.
     mmap: MmapMut,
-    /// Byte offset of the next read or write.
+    /// Byte offset of the next read or write. Only advances after a
+    /// complete, committed insert (mmap write + SQLite write). On a
+    /// failed insert, the cursor is rolled back so the next insert
+    /// overwrites the uncommitted bytes rather than leaving them orphaned.
     cursor: usize,
 }
 
@@ -42,11 +51,7 @@ impl GrowableMmap {
     pub fn open(path: impl AsRef<Path>) -> EmbedBResult<Self> {
         let path = path.as_ref();
         let file = OpenOptions::new().read(true).write(true).open(path)?;
-
-        // SAFETY:
-        // We own the file handle and guarantee that it is
-        // not modified in or out-of-process.
-        let mmap = unsafe { MmapMut::map_mut(&file).map_err(|_| EmbedbError::MmapFailed)? };
+        let mmap = map_mut(&file)?;
         Ok(Self {
             file,
             mmap,
@@ -65,10 +70,7 @@ impl GrowableMmap {
             .open(path)?;
 
         file.set_len(INITIAL_SIZE)?;
-        // SAFETY:
-        // We own the file handle and guarantee that it is
-        // not modified in or out-of-process.
-        let mmap = unsafe { MmapMut::map_mut(&file).map_err(|_| EmbedbError::MmapFailed)? };
+        let mmap = map_mut(&file)?;
         Ok(Self {
             file,
             mmap,
@@ -80,6 +82,13 @@ impl GrowableMmap {
     #[inline(always)]
     pub fn advance(&mut self, n: usize) {
         self.cursor += n;
+    }
+
+    /// Rolls the cursor back by `n` bytes, undoing the most recent write
+    /// after a failed insert so the position can be safely overwritten.
+    #[inline(always)]
+    pub fn rollback(&mut self, n: usize) {
+        self.cursor = self.cursor.saturating_sub(n);
     }
 
     /// Reads bytes from the current cursor position into `buffer`.
@@ -130,7 +139,13 @@ impl GrowableMmap {
         };
 
         self.file.set_len(updated_size)?;
-        self.mmap = unsafe { MmapMut::map_mut(&self.file).map_err(|_| EmbedbError::MmapFailed)? };
+        self.mmap = map_mut(&self.file)?;
         Ok(())
     }
+}
+
+/// # Safety
+/// See [`GrowableMmap`] struct-level safety comment.
+fn map_mut(file: &File) -> EmbedBResult<MmapMut> {
+    unsafe { MmapMut::map_mut(file).map_err(|_| EmbedbError::MmapFailed) }
 }
