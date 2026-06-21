@@ -98,6 +98,7 @@ impl GrowableMmap {
 
     /// Acquires a shared lock on the backing file and returns a
     /// [`ReadGuard`] through which read operations can be performed.
+    #[allow(unused)]
     pub fn acquire_read(&self) -> EmbedBResult<ReadGuard<'_>> {
         file_guard::lock(&self.file, Lock::Shared, 0, 1)
             .map(|guard| ReadGuard {
@@ -124,7 +125,8 @@ impl GrowableMmap {
 
 impl ReadGuard<'_> {
     /// Reads bytes from the current cursor position into `buffer`.
-    pub fn read(&mut self, buffer: &mut [u8]) -> EmbedBResult<usize> {
+    #[allow(unused)]
+    pub fn read(&self, buffer: &mut [u8]) -> EmbedBResult<usize> {
         let start = *self.cursor;
         let mut slice = &self.mmap[start..];
         let n = slice.read(buffer).expect("read is infallible");
@@ -144,10 +146,33 @@ impl ReadGuard<'_> {
 }
 
 impl WriteGuard<'_> {
+    /// Returns the current position of the [`GrowableMmap`].
+    pub fn cursor(&self) -> usize {
+        *self.cursor
+    }
+
     /// Advances the cursor by `n` bytes, committing the most recent write.
-    #[allow(unused)]
     pub fn advance(&mut self, offset: usize) {
         *self.cursor += offset;
+    }
+    
+    /// Reads bytes from the current cursor position into `buffer`.
+    pub fn read(&self, buffer: &mut [u8]) -> EmbedBResult<usize> {
+        let start = *self.cursor;
+        let mut slice = &self.mmap[start..];
+        let n = slice.read(buffer).expect("read is infallible");
+        Ok(n)
+    }
+
+    /// Reads bytes from the given range into `buffer`.
+    #[allow(unused)]
+    pub fn read_range<R>(&self, range: R, buffer: &mut [u8]) -> EmbedBResult<usize>
+    where
+        R: SliceIndex<[u8], Output = [u8]>,
+    {
+        let mut slice = self.mmap.index(range);
+        let n = slice.read(buffer).expect("read is infallible");
+        Ok(n)
     }
 
     /// Writes `bytes` at the current cursor position, growing the
@@ -165,6 +190,14 @@ impl WriteGuard<'_> {
             .flush_range(start, n)
             .map_err(|_| StorageError::FlushFailed)?;
 
+        Ok(n)
+    }
+
+    /// Writes `bytes` at the current cursor position, growing the
+    /// backing file if necessary. Does advance the cursor.
+    pub fn append(&mut self, bytes: &[u8]) -> EmbedBResult<usize> {
+        let n = self.write(bytes)?;
+        self.advance(bytes.len());
         Ok(n)
     }
 

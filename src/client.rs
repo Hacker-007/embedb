@@ -24,7 +24,6 @@ pub struct EmbedBClient {
     /// The handle to the stored mmap'ed vector store.
     store: GrowableMmap,
     /// A connection to the metadata SQLite database.
-    #[allow(unused)]
     metadata: MetadataTable,
 }
 
@@ -46,17 +45,19 @@ impl EmbedBClient {
     /// if the header are absent or corrupted.
     fn open(base: PathBuf, dimensionality: u32) -> EmbedBResult<Self> {
         let mut buffer = [0u8; 16];
-        let store = GrowableMmap::open(base.join("store.embedb"))?;
+        let mut store = GrowableMmap::open(base.join("store.embedb"))?;
         let metadata = MetadataTable::open(base.join("metadata.db3"))?;
-        store
-            .acquire_read()
-            .and_then(|mut guard| guard.read(&mut buffer))?;
 
+        let mut guard = store.acquire_write()?;
+        guard.read(&mut buffer)?;
         let header = EmbedBHeader::parse(&buffer)?;
         if header.dimensionality != dimensionality {
             return Err(StoreError::InvalidHeader.into());
         }
 
+        let offset = metadata.next_offset(&header)?;
+        guard.advance(offset);
+        drop(guard);
         Ok(Self {
             base,
             header,
@@ -74,7 +75,7 @@ impl EmbedBClient {
         let metadata = MetadataTable::create(base.join("metadata.db3"))?;
         store
             .acquire_write()
-            .and_then(|mut guard| guard.write(header.to_bytes()))?;
+            .and_then(|mut guard| guard.append(header.to_bytes()))?;
 
         Ok(Self {
             base,
@@ -85,7 +86,7 @@ impl EmbedBClient {
     }
 
     /// Inserts an embedding into the store.
-    pub fn insert(&mut self, embedding: impl AsRef<[f32]>) -> EmbedBResult<()> {
+    pub fn insert(&mut self, label: &str, embedding: impl AsRef<[f32]>) -> EmbedBResult<()> {
         let embedding = embedding.as_ref();
         if embedding.len() != self.header.dimensionality as usize {
             return Err(EmbedbError::DimensionMismatch {
@@ -94,9 +95,11 @@ impl EmbedBClient {
             });
         }
 
-        self.store
-            .acquire_write()
-            .and_then(|mut guard| guard.write(bytemuck::cast_slice(embedding)))
-            .map(|_| ())
+        let mut guard = self.store.acquire_write()?;
+        let offset = guard.cursor();
+        let n = guard.write(bytemuck::cast_slice(embedding))?;
+        self.metadata.insert(label, offset)?;
+        guard.advance(n);
+        Ok(())
     }
 }

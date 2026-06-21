@@ -2,7 +2,7 @@ use std::path::Path;
 
 use rusqlite::{Connection, OptionalExtension, params};
 
-use crate::error::EmbedBResult;
+use crate::{error::EmbedBResult, header::EmbedBHeader};
 
 /// The metadata associated with a single vector
 /// in the EmbedB store.
@@ -69,12 +69,22 @@ impl MetadataTable {
             .map_err(Into::into)
     }
 
+    /// Returns the byte offset from where new writes should begin.
+    pub fn next_offset(&self, header: &EmbedBHeader) -> EmbedBResult<usize> {
+        self.0
+            .query_one(
+                "select coalesce(max(offset) + ?1, ?2) from metadata",
+                [header.dimensionality * 4, EmbedBHeader::SIZE as u32],
+                |row| row.get::<_, usize>(0),
+            )
+            .map_err(Into::into)
+    }
+
     /// Inserts `metadata` into the table.
-    #[allow(unused)]
-    pub fn insert(&self, metadata: &VectorMetadata) -> EmbedBResult<()> {
+    pub fn insert(&self, label: &str, offset: usize) -> EmbedBResult<()> {
         self.0.execute(
-            "insert into metadata (label, offset, is_deleted) values (?1, ?2, ?3)",
-            params![metadata.label, metadata.offset, metadata.is_deleted],
+            "insert into metadata (label, offset) values (?1, ?2)",
+            params![label, offset],
         )?;
 
         Ok(())

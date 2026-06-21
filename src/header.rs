@@ -20,6 +20,9 @@ pub struct EmbedBHeader {
 }
 
 impl EmbedBHeader {
+    /// The size of [`EmbedBHeader`] in bytes.
+    pub const SIZE: usize = std::mem::size_of::<Self>();
+
     /// Creates a new [`EmbedBHeader`] with the given `dimensionality`
     /// and the current version.
     pub fn new(dimensionality: u32) -> Self {
