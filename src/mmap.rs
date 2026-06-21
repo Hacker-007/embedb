@@ -9,7 +9,7 @@ use std::{
 use file_guard::Lock;
 use memmap2::MmapMut;
 
-use crate::error::{EmbedBResult, EmbedbError};
+use crate::error::{EmbedBResult, StorageError};
 
 pub(crate) const INITIAL_SIZE: u64 = 1_024;
 pub(crate) const SOFT_THRESHOLD: u64 = 1_073_741_824;
@@ -127,7 +127,7 @@ impl GrowableMmap {
         let n = slice.write(bytes).expect("write is infallible");
         self.mmap
             .flush_range(self.cursor, n)
-            .map_err(|_| EmbedbError::FlushFailed)?;
+            .map_err(|_| StorageError::FlushFailed)?;
 
         self.cursor += n;
         Ok(n)
@@ -153,5 +153,5 @@ impl GrowableMmap {
 /// # Safety
 /// See [`GrowableMmap`] struct-level safety comment.
 fn map_mut(file: &File) -> EmbedBResult<MmapMut> {
-    unsafe { MmapMut::map_mut(file).map_err(|_| EmbedbError::MmapFailed) }
+    unsafe { MmapMut::map_mut(file).map_err(|_| StorageError::MmapFailed.into()) }
 }

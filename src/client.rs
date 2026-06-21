@@ -1,7 +1,9 @@
 use std::path::{Path, PathBuf};
 
+use rusqlite::Connection;
+
 use crate::{
-    error::{EmbedBResult, EmbedbError},
+    error::{EmbedBResult, EmbedbError, StoreError},
     header::EmbedBHeader,
     mmap::GrowableMmap,
 };
@@ -19,11 +21,12 @@ pub struct EmbedBClient {
     #[allow(unused)]
     base: PathBuf,
     /// The header of the vector store.
-    #[allow(unused)]
     header: EmbedBHeader,
     /// The handle to the stored mmap'ed vector store.
-    #[allow(unused)]
     store: GrowableMmap,
+    /// A connection to the metadata SQLite database.
+    #[allow(unused)]
+    metadata: Connection,
 }
 
 impl EmbedBClient {
@@ -31,7 +34,8 @@ impl EmbedBClient {
     /// creating it if it doesn't exist.
     pub fn new(base: impl AsRef<Path>, dimensionality: u32) -> EmbedBResult<Self> {
         let base = base.as_ref().to_owned();
-        if base.exists() {
+        let test_path = base.join("store.embedb");
+        if test_path.exists() {
             Self::open(base, dimensionality)
         } else {
             Self::create(base, dimensionality)
@@ -44,30 +48,49 @@ impl EmbedBClient {
     fn open(base: PathBuf, dimensionality: u32) -> EmbedBResult<Self> {
         let mut buffer = [0u8; 16];
         let mut store = GrowableMmap::open(base.join("store.embedb"))?;
+        let metadata = Connection::open(base.join("metadata.db3"))?;
         store.read(&mut buffer)?;
 
         let header = EmbedBHeader::parse(&buffer)?;
         if header.dimensionality != dimensionality {
-            return Err(EmbedbError::InvalidHeader);
+            return Err(StoreError::InvalidHeader.into());
         }
 
         Ok(Self {
             base,
             header,
             store,
+            metadata,
         })
     }
 
     /// Creates a new store at `base`, writing the header to the
     /// store file to mark it as a valid EmbedB store.
     fn create(base: PathBuf, dimensionality: u32) -> EmbedBResult<Self> {
+        std::fs::create_dir_all(&base)?;
         let header = EmbedBHeader::new(dimensionality);
         let mut store = GrowableMmap::create(base.join("store.embedb"))?;
+        let metadata = Connection::open(base.join("metadata.db3"))?;
         store.write(header.to_bytes())?;
         Ok(Self {
             base,
             header,
             store,
+            metadata,
         })
+    }
+
+    /// Inserts an embedding into the store.
+    pub fn insert(&mut self, embedding: impl AsRef<[f32]>) -> EmbedBResult<()> {
+        let embedding = embedding.as_ref();
+        if embedding.len() != self.header.dimensionality as usize {
+            return Err(EmbedbError::DimensionMismatch {
+                expected: self.header.dimensionality as usize,
+                actual: embedding.len(),
+            });
+        }
+
+        self.store.write(bytemuck::cast_slice(embedding))?;
+        Ok(())
     }
 }

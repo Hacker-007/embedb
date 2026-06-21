@@ -1,6 +1,6 @@
 use bytemuck::{Pod, Zeroable, try_from_bytes};
 
-use crate::error::{EmbedBResult, EmbedbError};
+use crate::error::{EmbedBResult, StoreError};
 
 const MAGIC: [u8; 8] = *b"embedb\0\0";
 const VERSION: u16 = 1;
@@ -35,9 +35,9 @@ impl EmbedBHeader {
     /// the slice is the wrong size, misaligned, has an invalid magic value,
     /// or has non-zero padding bytes.
     pub fn parse(buffer: &[u8]) -> EmbedBResult<Self> {
-        let &header = try_from_bytes::<Self>(buffer).map_err(|_| EmbedbError::InvalidHeader)?;
+        let &header = try_from_bytes::<Self>(buffer).map_err(|_| StoreError::InvalidHeader)?;
         if header.magic != MAGIC || header.padding != [0; 2] {
-            return Err(EmbedbError::InvalidHeader);
+            return Err(StoreError::InvalidHeader.into());
         }
 
         Ok(header)
