@@ -79,19 +79,6 @@ impl GrowableMmap {
         })
     }
 
-    /// Advances the cursor by `n` bytes.
-    #[inline(always)]
-    pub fn advance(&mut self, n: usize) {
-        self.cursor += n;
-    }
-
-    /// Rolls the cursor back by `n` bytes, undoing the most recent write
-    /// after a failed insert so the position can be safely overwritten.
-    #[inline(always)]
-    pub fn rollback(&mut self, n: usize) {
-        self.cursor = self.cursor.saturating_sub(n);
-    }
-
     /// Reads bytes from the current cursor position into `buffer`.
     pub fn read(&mut self, buffer: &mut [u8]) -> EmbedBResult<usize> {
         let _guard = file_guard::lock(&self.file, Lock::Shared, 0, 1)?;
@@ -102,6 +89,7 @@ impl GrowableMmap {
     }
 
     /// Reads bytes from the given range into `buffer`.
+    #[allow(unused)]
     pub fn read_range<R>(&self, range: R, buffer: &mut [u8]) -> EmbedBResult<usize>
     where
         R: SliceIndex<[u8], Output = [u8]>,
