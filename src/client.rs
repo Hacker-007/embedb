@@ -1,10 +1,9 @@
 use std::path::{Path, PathBuf};
 
-use rusqlite::Connection;
-
 use crate::{
     error::{EmbedBResult, EmbedbError, StoreError},
     header::EmbedBHeader,
+    metadata::MetadataTable,
     mmap::GrowableMmap,
 };
 
@@ -26,7 +25,7 @@ pub struct EmbedBClient {
     store: GrowableMmap,
     /// A connection to the metadata SQLite database.
     #[allow(unused)]
-    metadata: Connection,
+    metadata: MetadataTable,
 }
 
 impl EmbedBClient {
@@ -47,9 +46,11 @@ impl EmbedBClient {
     /// if the header are absent or corrupted.
     fn open(base: PathBuf, dimensionality: u32) -> EmbedBResult<Self> {
         let mut buffer = [0u8; 16];
-        let mut store = GrowableMmap::open(base.join("store.embedb"))?;
-        let metadata = Connection::open(base.join("metadata.db3"))?;
-        store.read(&mut buffer)?;
+        let store = GrowableMmap::open(base.join("store.embedb"))?;
+        let metadata = MetadataTable::open(base.join("metadata.db3"))?;
+        store
+            .acquire_read()
+            .and_then(|mut guard| guard.read(&mut buffer))?;
 
         let header = EmbedBHeader::parse(&buffer)?;
         if header.dimensionality != dimensionality {
@@ -70,8 +71,11 @@ impl EmbedBClient {
         std::fs::create_dir_all(&base)?;
         let header = EmbedBHeader::new(dimensionality);
         let mut store = GrowableMmap::create(base.join("store.embedb"))?;
-        let metadata = Connection::open(base.join("metadata.db3"))?;
-        store.write(header.to_bytes())?;
+        let metadata = MetadataTable::create(base.join("metadata.db3"))?;
+        store
+            .acquire_write()
+            .and_then(|mut guard| guard.write(header.to_bytes()))?;
+
         Ok(Self {
             base,
             header,
@@ -90,7 +94,9 @@ impl EmbedBClient {
             });
         }
 
-        self.store.write(bytemuck::cast_slice(embedding))?;
-        Ok(())
+        self.store
+            .acquire_write()
+            .and_then(|mut guard| guard.write(bytemuck::cast_slice(embedding)))
+            .map(|_| ())
     }
 }

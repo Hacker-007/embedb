@@ -6,7 +6,7 @@ use std::{
     slice::SliceIndex,
 };
 
-use file_guard::Lock;
+use file_guard::{FileGuard, Lock};
 use memmap2::MmapMut;
 
 use crate::error::{EmbedBResult, StorageError};
@@ -40,9 +40,28 @@ pub struct GrowableMmap {
     mmap: MmapMut,
     /// Byte offset of the next read or write. Only advances after a
     /// complete, committed insert (mmap write + SQLite write). On a
-    /// failed insert, the cursor is rolled back so the next insert
+    /// failed insert, the cursor is not advanced so the next insert
     /// overwrites the uncommitted bytes rather than leaving them orphaned.
     cursor: usize,
+}
+
+/// A temporary guard that holds a shared lock on the backing
+/// file of a [`GrowableMmap`]. Read operations are gated through
+/// this type.
+pub struct ReadGuard<'a> {
+    mmap: &'a MmapMut,
+    cursor: &'a usize,
+    _guard: FileGuard<&'a File>,
+}
+
+/// A temporary guard that holds an exclusive lock on the backing
+/// file of a [`GrowableMmap`]. Write operations are gated through
+/// this type.
+pub struct WriteGuard<'a> {
+    file: &'a File,
+    mmap: &'a mut MmapMut,
+    cursor: &'a mut usize,
+    _guard: FileGuard<&'a File>,
 }
 
 impl GrowableMmap {
@@ -50,7 +69,6 @@ impl GrowableMmap {
     /// failing if it doesn't exist. The cursor is positioned at the
     /// start of the file.
     pub fn open(path: impl AsRef<Path>) -> EmbedBResult<Self> {
-        let path = path.as_ref();
         let file = OpenOptions::new().read(true).write(true).open(path)?;
         let mmap = map_mut(&file)?;
         Ok(Self {
@@ -63,7 +81,6 @@ impl GrowableMmap {
     /// Creates a new store file at `path`, failing if it already exists.
     /// The file is pre-allocated to [`INITIAL_SIZE`] bytes before mapping.
     pub fn create(path: impl AsRef<Path>) -> EmbedBResult<Self> {
-        let path = path.as_ref();
         let file = OpenOptions::new()
             .create_new(true)
             .read(true)
@@ -79,12 +96,38 @@ impl GrowableMmap {
         })
     }
 
+    /// Acquires a shared lock on the backing file and returns a
+    /// [`ReadGuard`] through which read operations can be performed.
+    pub fn acquire_read(&self) -> EmbedBResult<ReadGuard<'_>> {
+        file_guard::lock(&self.file, Lock::Shared, 0, 1)
+            .map(|guard| ReadGuard {
+                mmap: &self.mmap,
+                cursor: &self.cursor,
+                _guard: guard,
+            })
+            .map_err(|_| StorageError::LockFailed.into())
+    }
+
+    /// Acquires an exclusive lock on the backing file and returns a
+    /// [`WriteGuard`] through which write operations can be performed.
+    pub fn acquire_write(&mut self) -> EmbedBResult<WriteGuard<'_>> {
+        file_guard::lock(&self.file, Lock::Exclusive, 0, 1)
+            .map(|guard| WriteGuard {
+                file: &self.file,
+                mmap: &mut self.mmap,
+                cursor: &mut self.cursor,
+                _guard: guard,
+            })
+            .map_err(|_| StorageError::LockFailed.into())
+    }
+}
+
+impl ReadGuard<'_> {
     /// Reads bytes from the current cursor position into `buffer`.
     pub fn read(&mut self, buffer: &mut [u8]) -> EmbedBResult<usize> {
-        let _guard = file_guard::lock(&self.file, Lock::Shared, 0, 1)?;
-        let mut slice = &self.mmap[self.cursor..];
+        let start = *self.cursor;
+        let mut slice = &self.mmap[start..];
         let n = slice.read(buffer).expect("read is infallible");
-        self.cursor += n;
         Ok(n)
     }
 
@@ -94,30 +137,34 @@ impl GrowableMmap {
     where
         R: SliceIndex<[u8], Output = [u8]>,
     {
-        let _guard = file_guard::lock(&self.file, Lock::Shared, 0, 1)?;
         let mut slice = self.mmap.index(range);
         let n = slice.read(buffer).expect("read is infallible");
         Ok(n)
     }
+}
+
+impl WriteGuard<'_> {
+    /// Advances the cursor by `n` bytes, committing the most recent write.
+    #[allow(unused)]
+    pub fn advance(&mut self, offset: usize) {
+        *self.cursor += offset;
+    }
 
     /// Writes `bytes` at the current cursor position, growing the
-    /// backing file if necessary, then advances the cursor.
+    /// backing file if necessary. Does not advance the cursor.
     pub fn write(&mut self, bytes: &[u8]) -> EmbedBResult<usize> {
-        // Resize before acquiring the lock: resize requires &mut self,
-        // which conflicts with the borrow held by the lock guard.
-        while self.cursor + bytes.len() > self.mmap.len() {
+        while *self.cursor + bytes.len() > self.mmap.len() {
             self.resize()?;
         }
 
-        let _guard = file_guard::lock(&self.file, Lock::Exclusive, 0, 1)?;
-        let end = self.cursor + bytes.len();
-        let mut slice = &mut self.mmap[self.cursor..end];
+        let start = *self.cursor;
+        let end = start + bytes.len();
+        let mut slice = &mut self.mmap[start..end];
         let n = slice.write(bytes).expect("write is infallible");
         self.mmap
-            .flush_range(self.cursor, n)
+            .flush_range(start, n)
             .map_err(|_| StorageError::FlushFailed)?;
 
-        self.cursor += n;
         Ok(n)
     }
 
@@ -133,13 +180,13 @@ impl GrowableMmap {
         };
 
         self.file.set_len(updated_size)?;
-        self.mmap = map_mut(&self.file)?;
+        *self.mmap = map_mut(self.file)?;
         Ok(())
     }
 }
 
 /// # Safety
-/// See [`GrowableMmap`] struct-level safety comment.
+/// See [`GrowableMmap`]'s safety comment.
 fn map_mut(file: &File) -> EmbedBResult<MmapMut> {
     unsafe { MmapMut::map_mut(file).map_err(|_| StorageError::MmapFailed.into()) }
 }
