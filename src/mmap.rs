@@ -1,6 +1,6 @@
 use std::{
     fs::{File, OpenOptions},
-    io::{Read, Write},
+    io::Write,
     ops::Index,
     path::Path,
     slice::SliceIndex,
@@ -124,24 +124,21 @@ impl GrowableMmap {
 }
 
 impl ReadGuard<'_> {
-    /// Reads bytes from the current cursor position into `buffer`.
+    /// Reads `length` bytes from the current cursor position into `buffer`.
     #[allow(unused)]
-    pub fn read(&self, buffer: &mut [u8]) -> EmbedBResult<usize> {
+    pub fn read(&self, length: usize) -> EmbedBResult<&[u8]> {
         let start = *self.cursor;
-        let mut slice = &self.mmap[start..];
-        let n = slice.read(buffer).expect("read is infallible");
-        Ok(n)
+        let end = start + length;
+        Ok(&self.mmap[start..end])
     }
 
     /// Reads bytes from the given range into `buffer`.
     #[allow(unused)]
-    pub fn read_range<R>(&self, range: R, buffer: &mut [u8]) -> EmbedBResult<usize>
+    pub fn read_range<R>(&self, range: R) -> EmbedBResult<&[u8]>
     where
         R: SliceIndex<[u8], Output = [u8]>,
     {
-        let mut slice = self.mmap.index(range);
-        let n = slice.read(buffer).expect("read is infallible");
-        Ok(n)
+        Ok(self.mmap.index(range))
     }
 }
 
@@ -155,24 +152,22 @@ impl WriteGuard<'_> {
     pub fn advance(&mut self, offset: usize) {
         *self.cursor += offset;
     }
-    
-    /// Reads bytes from the current cursor position into `buffer`.
-    pub fn read(&self, buffer: &mut [u8]) -> EmbedBResult<usize> {
+
+    /// Reads `length` bytes from the current cursor position into `buffer`.
+    #[allow(unused)]
+    pub fn read(&self, length: usize) -> EmbedBResult<&[u8]> {
         let start = *self.cursor;
-        let mut slice = &self.mmap[start..];
-        let n = slice.read(buffer).expect("read is infallible");
-        Ok(n)
+        let end = start + length;
+        Ok(&self.mmap[start..end])
     }
 
     /// Reads bytes from the given range into `buffer`.
     #[allow(unused)]
-    pub fn read_range<R>(&self, range: R, buffer: &mut [u8]) -> EmbedBResult<usize>
+    pub fn read_range<R>(&self, range: R) -> EmbedBResult<&[u8]>
     where
         R: SliceIndex<[u8], Output = [u8]>,
     {
-        let mut slice = self.mmap.index(range);
-        let n = slice.read(buffer).expect("read is infallible");
-        Ok(n)
+        Ok(self.mmap.index(range))
     }
 
     /// Writes `bytes` at the current cursor position, growing the

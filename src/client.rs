@@ -1,11 +1,24 @@
-use std::path::{Path, PathBuf};
+use std::{collections::BinaryHeap, path::{Path, PathBuf}};
+
+use simsimd::SpatialSimilarity;
 
 use crate::{
     error::{EmbedBResult, EmbedbError, StoreError},
     header::EmbedBHeader,
     metadata::MetadataTable,
     mmap::GrowableMmap,
+    search::SearchResult,
 };
+
+macro_rules! try_optional {
+    ($value: expr) => {
+        match $value {
+            Ok(Some(value)) => value,
+            Ok(None) => return Ok(None),
+            Err(err) => return Err(err),
+        }
+    };
+}
 
 /// A client handle to an EmbedB store. Upon initialization,
 /// the database is sized to 4 KB. Each subsequent allocation
@@ -20,11 +33,11 @@ pub struct EmbedBClient {
     #[allow(unused)]
     base: PathBuf,
     /// The header of the vector store.
-    header: EmbedBHeader,
+    pub(crate) header: EmbedBHeader,
     /// The handle to the stored mmap'ed vector store.
-    store: GrowableMmap,
+    pub(crate) store: GrowableMmap,
     /// A connection to the metadata SQLite database.
-    metadata: MetadataTable,
+    pub(crate) metadata: MetadataTable,
 }
 
 impl EmbedBClient {
@@ -44,13 +57,10 @@ impl EmbedBClient {
     /// the directory contains a valid EmbedB store, and returns an error
     /// if the header are absent or corrupted.
     fn open(base: PathBuf, dimensionality: u32) -> EmbedBResult<Self> {
-        let mut buffer = [0u8; 16];
         let mut store = GrowableMmap::open(base.join("store.embedb"))?;
         let metadata = MetadataTable::open(base.join("metadata.db3"))?;
-
         let mut guard = store.acquire_write()?;
-        guard.read(&mut buffer)?;
-        let header = EmbedBHeader::parse(&buffer)?;
+        let header = guard.read(16).and_then(EmbedBHeader::parse)?;
         if header.dimensionality != dimensionality {
             return Err(StoreError::InvalidHeader.into());
         }
@@ -85,6 +95,50 @@ impl EmbedBClient {
         })
     }
 
+    /// Reads the vector associated with `label` from the store
+    /// and copies it to a vector.
+    pub fn get(&self, label: &str) -> EmbedBResult<Option<Vec<f32>>> {
+        let metadata = try_optional!(self.metadata.get(label));
+        let start = metadata.offset;
+        let end = start + (self.header.dimensionality * 4) as usize;
+        let guard = self.store.acquire_read()?;
+        let embedding = guard.read_range(start..end)?;
+        Ok(Some(bytemuck::cast_slice(embedding).to_vec()))
+    }
+
+    /// Searches the store for the `k` vectors most similar to `query` using
+    /// brute-force cosine similarity, returning results in descending order
+    /// of relevance. Returns an error if `query` has a different
+    /// dimensionality than the store.
+    pub fn search(&self, k: usize, query: impl AsRef<[f32]>) -> EmbedBResult<Vec<SearchResult>> {
+        let query = query.as_ref();
+        if query.len() != self.header.dimensionality as usize {
+            return Err(EmbedbError::DimensionMismatch {
+                expected: self.header.dimensionality as usize,
+                actual: query.len(),
+            });
+        }
+
+        let guard = self.store.acquire_read()?;
+        let length = (self.header.dimensionality * 4) as usize;
+        let mut matches = BinaryHeap::new();
+        matches.reserve_exact(k + 1);
+        self.metadata.for_each(|metadata| {
+            let start = metadata.offset;
+            let end = start + length;
+            let buffer: &[f32] = guard.read_range(start..end).map(bytemuck::cast_slice)?;
+            let relevance = f32::cosine(query, buffer).expect("query has the same dimensionality");
+            matches.push(SearchResult { label: metadata.label, relevance });
+            if matches.len() > k {
+                matches.pop();
+            }
+
+            Ok(())
+        })?;
+
+        Ok(matches.into_sorted_vec())
+    }
+
     /// Inserts an embedding into the store.
     pub fn insert(&mut self, label: &str, embedding: impl AsRef<[f32]>) -> EmbedBResult<()> {
         let embedding = embedding.as_ref();
@@ -101,5 +155,10 @@ impl EmbedBClient {
         self.metadata.insert(label, offset)?;
         guard.advance(n);
         Ok(())
+    }
+
+    /// Mark the vector associated with `label` as deleted.
+    pub fn delete(&mut self, label: &str) -> EmbedBResult<()> {
+        self.metadata.delete(label)
     }
 }

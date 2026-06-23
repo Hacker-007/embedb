@@ -7,15 +7,16 @@ use crate::{error::EmbedBResult, header::EmbedBHeader};
 /// The metadata associated with a single vector
 /// in the EmbedB store.
 #[derive(Debug)]
-#[allow(unused)]
 pub struct VectorMetadata {
     /// The unique integer ID of the vector's metadata.
+    #[allow(unused)]
     id: i64,
     /// The unique, user-provided label for the vector.
-    label: String,
+    pub label: String,
     /// The byte offset of the vector in the mmap'ed store.
-    offset: usize,
+    pub offset: usize,
     /// A tombstone marker for soft-deleted vectors.
+    #[allow(unused)]
     is_deleted: bool,
 }
 
@@ -69,6 +70,32 @@ impl MetadataTable {
             .map_err(Into::into)
     }
 
+    /// Executes `f` for each row in the metadata table that is
+    /// currently active.
+    pub fn for_each(
+        &self,
+        mut f: impl FnMut(VectorMetadata) -> EmbedBResult<()>,
+    ) -> EmbedBResult<()> {
+        let mut statement = self
+            .0
+            .prepare("select * from metadata where is_deleted = 0")?;
+
+        let rows = statement.query_map([], |row| {
+            Ok(VectorMetadata {
+                id: row.get("id")?,
+                label: row.get("label")?,
+                offset: row.get("offset")?,
+                is_deleted: row.get("is_deleted")?,
+            })
+        })?;
+
+        for row in rows {
+            f(row?)?;
+        }
+
+        Ok(())
+    }
+
     /// Returns the byte offset from where new writes should begin.
     pub fn next_offset(&self, header: &EmbedBHeader) -> EmbedBResult<usize> {
         self.0
@@ -83,7 +110,8 @@ impl MetadataTable {
     /// Inserts `metadata` into the table.
     pub fn insert(&self, label: &str, offset: usize) -> EmbedBResult<()> {
         self.0.execute(
-            "insert into metadata (label, offset) values (?1, ?2)",
+            "insert into metadata (label, offset) values (?1, ?2)
+             on conflict(label) do update set offset = excluded.offset, is_deleted = 0",
             params![label, offset],
         )?;
 
